@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 
 from defs import CellType
 
-def parse() -> (bool, dict):
+def parse(group_id: str) -> (bool, dict):
 	""" Парсит сайт кампуса СГУ им. Питирима Сорокина в целях получения расписания.
 	Вызывается исключение, если верстка сайта поменялась, так как логика парсера жестко связана с размещением html-элементов.
 
@@ -35,9 +35,8 @@ def parse() -> (bool, dict):
 		"Content-Type": "application/x-www-form-urlencoded"
 	}
 	data = {
-		"num_group": "131-ПМо",
+		"num_group": group_id,
 		"searchdata": ""
-		# "prev": "2023-06-12_131-ПМо"
 	}
 
 	page = requests.post(url, data=data, headers=headers)
@@ -55,15 +54,19 @@ def parse() -> (bool, dict):
 	if ret != None:
 		return ret
 
+	exception_text = "Упс! Парсер сломался или неверно указана учебная группа"
+
 	soup = BeautifulSoup(page.text, "lxml")
 	schedule_table = soup.find("table", class_="schedule")
-	tbody = schedule_table.find("tbody")
+	try:
+		tbody = schedule_table.find("tbody")
+		cells = tbody.find_all("td")
+	except Exception:
+		raise Exception(exception_text)
 
-	cells = tbody.find_all("td")
-	i = CellType.DAYOFWEEK
+	cell_type = CellType.DAYOFWEEK # int, 0
 	response = {}
 	current_dayofweek, current_lesson_num = ("", 0)
-	exception_text = "Упс! Парсер сломался"
 	for cell in cells:
 		if cell.has_attr("class") \
 			and len(cell["class"]) > 0 \
@@ -78,10 +81,10 @@ def parse() -> (bool, dict):
 			response[dayofweek] = {"date": date}
 
 			current_dayofweek = dayofweek
-			i = CellType.LESSONNUM
+			cell_type = CellType.LESSONNUM
 			continue
 
-		match i % CellType.MAX:
+		match cell_type % CellType.MAX:
 			case CellType.LESSONNUM:
 				if response.get(current_dayofweek) == None:
 					raise Exception(exception_text)
@@ -108,10 +111,10 @@ def parse() -> (bool, dict):
 				lesson_info = lesson_info.replace("\t", "")
 				response[current_dayofweek][current_lesson_num]["lesson_info"] = lesson_info
 				
-				i = CellType.DAYOFWEEK
+				cell_type = CellType.DAYOFWEEK
 			case _:
 				raise Exception(exception_text)
 
-		i += 1
+		cell_type += 1
 
 	return (True, response)
