@@ -1,9 +1,16 @@
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
 
 from defs import CellType
+import utils
 
-def parse(group_id: str) -> (bool, dict):
+_url = "https://campus.syktsu.ru/schedule/group/"
+_headers = {
+	"Content-Type": "application/x-www-form-urlencoded"
+}
+
+async def parse_schedule(group_id: str, redis, use_cache: bool = True) -> (bool, dict):
 	""" Парсит сайт кампуса СГУ им. Питирима Сорокина в целях получения расписания.
 	Вызывается исключение, если верстка сайта поменялась, так как логика парсера жестко связана с размещением html-элементов.
 
@@ -15,31 +22,33 @@ def parse(group_id: str) -> (bool, dict):
 	{
 		"Понедельник": {
 			"date": "26.06.2023",
-			1: {
+			"1": {
 				"start_time": "08:30",
 				"lesson_info": "Уравнения математической физики (экз.) Сушков В.В., 431/1"
 			},
-			2: {
+			"2": {
 				"start_time": "10:10",
 				"lesson_info": ""
 			},
 			...
-			7: { ... }
+			"7": { ... }
 		}, 
 		...
 		"Суббота": { ... }
 	}
 	"""
-	url = "https://campus.syktsu.ru/schedule/group/"
-	headers = {
-		"Content-Type": "application/x-www-form-urlencoded"
-	}
-	data = {
+
+	if use_cache:
+		cache = await utils.check_cache(group_id, redis)
+		if cache["schedule"] != None:
+			return (True, cache["schedule"])
+	
+	post_data = {
 		"num_group": group_id,
 		"searchdata": ""
 	}
 
-	page = requests.post(url, data=data, headers=headers)
+	page = requests.post(_url, data=post_data, headers=_headers)
 	page.encoding = "utf-8"
 
 	ret = None
@@ -65,8 +74,8 @@ def parse(group_id: str) -> (bool, dict):
 		raise Exception(exception_text)
 
 	cell_type = CellType.DAYOFWEEK # int, 0
-	response = {}
-	current_dayofweek, current_lesson_num = ("", 0)
+	schedule = {}
+	current_dayofweek, current_lesson_num = ("", "")
 	for cell in cells:
 		if cell.has_attr("class") \
 			and len(cell["class"]) > 0 \
@@ -75,10 +84,10 @@ def parse(group_id: str) -> (bool, dict):
 			tmp = cell.text
 			dayofweek = tmp[ : tmp.find("(")]
 			date = tmp[tmp.find("(")+1 : len(tmp)-1]
-			if response.get(dayofweek) != None:
+			if schedule.get(dayofweek) != None:
 				raise Exception(exception_text)
 
-			response[dayofweek] = {"date": date}
+			schedule[dayofweek] = {"date": date}
 
 			current_dayofweek = dayofweek
 			cell_type = CellType.LESSONNUM
@@ -86,30 +95,30 @@ def parse(group_id: str) -> (bool, dict):
 
 		match cell_type % CellType.MAX:
 			case CellType.LESSONNUM:
-				if response.get(current_dayofweek) == None:
+				if schedule.get(current_dayofweek) == None:
 					raise Exception(exception_text)
 
-				lesson_num = int(cell.text)
-				response[current_dayofweek][lesson_num] = {}
+				lesson_num = cell.text
+				schedule[current_dayofweek][lesson_num] = {}
 				current_lesson_num = lesson_num
 			case CellType.STARTIME:
-				if response.get(current_dayofweek) == None \
-					and response[current_dayofweek].get(current_lesson_num) == None:
+				if schedule.get(current_dayofweek) == None \
+					and schedule[current_dayofweek].get(current_lesson_num) == None:
 
 					raise Exception(exception_text)
 
 				start_time = cell.text
-				response[current_dayofweek][current_lesson_num]["start_time"] = start_time
+				schedule[current_dayofweek][current_lesson_num]["start_time"] = start_time
 			case CellType.LESSONINFO:
-				if response.get(current_dayofweek) == None \
-					and response[current_dayofweek].get(current_lesson_num) == None:
+				if schedule.get(current_dayofweek) == None \
+					and schedule[current_dayofweek].get(current_lesson_num) == None:
 
 					raise Exception(exception_text)
 
 				lesson_info = cell.text
 				lesson_info = lesson_info.replace("\n", " ")
 				lesson_info = lesson_info.replace("\t", "")
-				response[current_dayofweek][current_lesson_num]["lesson_info"] = lesson_info
+				schedule[current_dayofweek][current_lesson_num]["lesson_info"] = lesson_info
 				
 				cell_type = CellType.DAYOFWEEK
 			case _:
@@ -117,4 +126,38 @@ def parse(group_id: str) -> (bool, dict):
 
 		cell_type += 1
 
-	return (True, response)
+	if use_cache:
+		cache["schedule"] = schedule
+		await utils.update_cache(group_id, cache, redis)
+
+	return (True, schedule)
+
+async def parse_last_update_time(group_id: str) -> int:
+	post_data = {
+		"num_group": group_id,
+		"searchdata": ""
+	}
+
+	page = requests.post(_url, data=post_data, headers=_headers)
+	page.encoding = "utf-8"
+
+	if page.status_code / 100 != 2:
+		return 0
+
+	soup = BeautifulSoup(page.text, "lxml")
+
+	page_content = soup.find("div", { "id": "page-content" })
+	try:
+		last_update_time_text = page_content.find("center").find("i").text
+
+		tmp = last_update_time_text.split(" ")
+		time = tmp.pop()
+		date = tmp.pop()
+
+		datetime_str = f"{date} {time}"
+		datetime_fmt = "%d.%m.%Y %H:%M:%S."
+		dt = datetime.strptime(datetime_str, datetime_fmt)
+	except Exception:
+		raise Exception()
+
+	return int(dt.timestamp())

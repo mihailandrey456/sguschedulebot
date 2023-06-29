@@ -20,21 +20,25 @@ _start_text = "велком, c помощью меня можешь получа
 
 _help_text = "/setgroup group_id - выбрать учебную группу\n" \
             "/setgroup - сбросить установленную группу\n" \
-            "/week - получить расписание на текущею неделю"
+            "/week - получить расписание на текущую неделю"
 
 _set_group_success_text = "Учебная группа установлена"
 _set_group_invalid_text1 = "Надо указать группу!!"
 
 _unset_group_text = "Учебная группа сброшена"
 
+_exception_text = "Упс! Парсер сломался или неверно указана учебная группа"
+
 Messages = {
     "start": _start_text,
     "help": _help_text,
     "set_group_success": _set_group_success_text,
     "set_group_invalid1": _set_group_invalid_text1,
-    "unset_group":_unset_group_text
+    "unset_group":_unset_group_text,
+    "exception": _exception_text
 }
 
 
 class RedisKeys(str, Enum):
     GROUP_ID = "group_id"
+    CACHE_HASH_NAME = "fsm:sguschedulebot"
